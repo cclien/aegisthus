@@ -24,13 +24,17 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.GzipCodec;
 import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskID;
+import org.apache.hadoop.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.DataOutputStream;
 import java.nio.ByteBuffer;
 import java.text.NumberFormat;
 import java.util.Collections;
@@ -69,13 +73,9 @@ public class JsonOutputFormat extends CustomFileNameFileOutputFormat<AegisthusKe
     @Override
     public RecordWriter<AegisthusKey, RowWritable> getRecordWriter(final TaskAttemptContext context)
             throws IOException {
-        // No extension on the aeg json format files for historical reasons
-        Path workFile = getDefaultWorkFile(context, "");
         Configuration conf = context.getConfiguration();
-        FileSystem fs = workFile.getFileSystem(conf);
         final long maxColSize = conf.getLong(Aegisthus.Feature.CONF_MAXCOLSIZE, -1);
         final boolean traceDataFromSource = conf.getBoolean(Aegisthus.Feature.CONF_TRACE_DATA_FROM_SOURCE, false);
-        final FSDataOutputStream outputStream = fs.create(workFile, false);
         final JsonFactory jsonFactory = new JsonFactory();
         final AbstractType<ByteBuffer> keyNameConverter = getConverter(conf, Aegisthus.Feature.CONF_KEYTYPE);
         final AbstractType<ByteBuffer> columnNameConverter = getConverter(conf, Aegisthus.Feature.CONF_COLUMNTYPE);
@@ -85,6 +85,28 @@ public class JsonOutputFormat extends CustomFileNameFileOutputFormat<AegisthusKe
         );
         final boolean legacyColumnNameFormatting =
                 conf.getBoolean(Aegisthus.Feature.CONF_LEGACY_COLUMN_NAME_FORMATTING, false);
+
+        boolean isCompressed = getCompressOutput(context);
+        CompressionCodec codec = null;
+        String extension = "";
+        if (isCompressed) {
+            Class<? extends CompressionCodec> codecClass = 
+              getOutputCompressorClass(context, GzipCodec.class);
+            codec = ReflectionUtils.newInstance(codecClass, conf);
+            extension = codec.getDefaultExtension();
+        }
+
+        // We will have extension if compression is on
+        Path workFile = getDefaultWorkFile(context, extension);
+        FileSystem fs = workFile.getFileSystem(conf);
+        FSDataOutputStream fsOutputStream = fs.create(workFile, false);
+
+        final DataOutputStream outputStream;
+        if (isCompressed) {
+            outputStream = new DataOutputStream(codec.createOutputStream(fsOutputStream));
+        } else {
+            outputStream = fsOutputStream;
+        }
 
         return new RecordWriter<AegisthusKey, RowWritable>() {
             private int errorLogCount = 0;
